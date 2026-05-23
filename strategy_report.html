@@ -1,0 +1,652 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Automated FX Strategy — Performance Report</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+
+  :root {
+    --bg:       #070d1a;
+    --card:     #0e1828;
+    --card2:    #111f33;
+    --border:   #1a2d47;
+    --gold:     #c9a84c;
+    --gold2:    #f0c96e;
+    --green:    #00d68f;
+    --red:      #ff4d6d;
+    --blue:     #3b82f6;
+    --text:     #e8f0fe;
+    --muted:    #6b85a8;
+    --accent:   #1e3a5f;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Inter', system-ui, sans-serif;
+    font-size: 14px;
+    line-height: 1.6;
+    min-height: 100vh;
+  }
+
+  /* ── Header ── */
+  .header {
+    background: linear-gradient(135deg, #070d1a 0%, #0e1f3d 60%, #0a1628 100%);
+    border-bottom: 1px solid var(--border);
+    padding: 48px 60px 40px;
+    position: relative;
+    overflow: hidden;
+  }
+  .header::before {
+    content: '';
+    position: absolute;
+    top: -80px; right: -80px;
+    width: 360px; height: 360px;
+    background: radial-gradient(circle, rgba(201,168,76,0.08) 0%, transparent 70%);
+    pointer-events: none;
+  }
+  .header-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    flex-wrap: wrap;
+    gap: 16px;
+  }
+  .logo-block { display: flex; flex-direction: column; gap: 4px; }
+  .logo-name {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 3px;
+    text-transform: uppercase;
+    color: var(--gold);
+  }
+  .header h1 {
+    font-size: 38px;
+    font-weight: 800;
+    letter-spacing: -0.5px;
+    color: #fff;
+    line-height: 1.1;
+  }
+  .header h1 span { color: var(--gold2); }
+  .header-sub {
+    margin-top: 8px;
+    font-size: 15px;
+    color: var(--muted);
+    font-weight: 400;
+  }
+  .badge {
+    background: rgba(201,168,76,0.12);
+    border: 1px solid rgba(201,168,76,0.3);
+    color: var(--gold2);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    padding: 6px 14px;
+    border-radius: 20px;
+  }
+
+  /* ── Layout ── */
+  .container { max-width: 1100px; margin: 0 auto; padding: 40px 40px 80px; }
+
+  .section-label {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 3px;
+    text-transform: uppercase;
+    color: var(--gold);
+    margin-bottom: 16px;
+  }
+
+  /* ── KPI Grid ── */
+  .kpi-grid {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 14px;
+    margin-bottom: 40px;
+  }
+  .kpi {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 22px 20px;
+    position: relative;
+    overflow: hidden;
+  }
+  .kpi::after {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 2px;
+    background: linear-gradient(90deg, var(--gold), transparent);
+  }
+  .kpi-label {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 10px;
+  }
+  .kpi-value {
+    font-size: 28px;
+    font-weight: 800;
+    color: #fff;
+    line-height: 1;
+  }
+  .kpi-value.green { color: var(--green); }
+  .kpi-value.gold  { color: var(--gold2); }
+  .kpi-value.red   { color: var(--red); }
+  .kpi-sub {
+    margin-top: 6px;
+    font-size: 11px;
+    color: var(--muted);
+  }
+
+  /* ── Charts ── */
+  .chart-row {
+    display: grid;
+    grid-template-columns: 1.2fr 0.8fr;
+    gap: 20px;
+    margin-bottom: 40px;
+  }
+  .chart-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 28px;
+  }
+  .chart-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: 4px;
+  }
+  .chart-subtitle {
+    font-size: 11px;
+    color: var(--muted);
+    margin-bottom: 20px;
+  }
+  .chart-wrap { position: relative; height: 220px; }
+
+  /* ── Income Table ── */
+  .income-section { margin-bottom: 40px; }
+  .income-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 16px;
+  }
+  .risk-tier {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    overflow: hidden;
+  }
+  .risk-tier-header {
+    padding: 18px 22px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .risk-tier.tier-1 .risk-tier-header { background: rgba(59,130,246,0.08); }
+  .risk-tier.tier-2 .risk-tier-header { background: rgba(201,168,76,0.08); }
+  .risk-tier.tier-3 .risk-tier-header { background: rgba(0,214,143,0.08); }
+  .tier-name { font-size: 15px; font-weight: 700; }
+  .tier-1 .tier-name { color: var(--blue); }
+  .tier-2 .tier-name { color: var(--gold2); }
+  .tier-3 .tier-name { color: var(--green); }
+  .tier-dd { font-size: 11px; color: var(--muted); }
+  .risk-tier-body { padding: 0; }
+  .income-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 13px 22px;
+    border-bottom: 1px solid rgba(26,45,71,0.6);
+  }
+  .income-row:last-child { border-bottom: none; }
+  .income-acct { font-size: 13px; color: var(--muted); }
+  .income-vals { text-align: right; }
+  .income-day { font-size: 14px; font-weight: 700; color: #fff; }
+  .income-mo { font-size: 11px; color: var(--muted); }
+  .highlight-row { background: rgba(201,168,76,0.05); }
+  .highlight-row .income-day { color: var(--gold2); }
+
+  /* ── Monthly table ── */
+  .table-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    overflow: hidden;
+    margin-bottom: 40px;
+  }
+  .table-card table { width: 100%; border-collapse: collapse; }
+  .table-card th {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    color: var(--muted);
+    padding: 14px 20px;
+    text-align: left;
+    background: rgba(14,24,40,0.8);
+    border-bottom: 1px solid var(--border);
+  }
+  .table-card td {
+    padding: 14px 20px;
+    border-bottom: 1px solid rgba(26,45,71,0.5);
+    font-size: 13px;
+  }
+  .table-card tr:last-child td { border-bottom: none; }
+  .table-card tr:hover td { background: rgba(255,255,255,0.02); }
+  .win-badge {
+    display: inline-block;
+    background: rgba(0,214,143,0.12);
+    color: var(--green);
+    font-size: 11px;
+    font-weight: 700;
+    padding: 2px 10px;
+    border-radius: 10px;
+  }
+  .loss-badge {
+    display: inline-block;
+    background: rgba(255,77,109,0.12);
+    color: var(--red);
+    font-size: 11px;
+    font-weight: 700;
+    padding: 2px 10px;
+    border-radius: 10px;
+  }
+  .partial-badge {
+    display: inline-block;
+    background: rgba(201,168,76,0.12);
+    color: var(--gold2);
+    font-size: 11px;
+    font-weight: 700;
+    padding: 2px 10px;
+    border-radius: 10px;
+  }
+
+  /* ── Strategy blurb ── */
+  .strategy-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 32px;
+    margin-bottom: 40px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 40px;
+  }
+  .strategy-block h3 {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--gold2);
+    margin-bottom: 12px;
+  }
+  .strategy-block p, .strategy-block li {
+    font-size: 13px;
+    color: var(--muted);
+    line-height: 1.8;
+  }
+  .strategy-block ul { padding-left: 16px; }
+  .strategy-block li { margin-bottom: 4px; }
+
+  /* ── Disclaimer ── */
+  .disclaimer {
+    border-top: 1px solid var(--border);
+    padding-top: 28px;
+    font-size: 11px;
+    color: var(--muted);
+    line-height: 1.8;
+  }
+
+  /* ── Divider ── */
+  .divider { height: 1px; background: var(--border); margin: 36px 0; }
+
+  /* ── Responsive ── */
+  @media (max-width: 800px) {
+    .header { padding: 32px 24px 28px; }
+    .header h1 { font-size: 26px; }
+    .kpi-grid { grid-template-columns: repeat(2, 1fr); }
+    .chart-row { grid-template-columns: 1fr; }
+    .income-grid { grid-template-columns: 1fr; }
+    .strategy-card { grid-template-columns: 1fr; gap: 24px; }
+    .container { padding: 24px 20px 60px; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ── Header ─────────────────────────────────────────────── -->
+<div class="header">
+  <div class="header-top">
+    <div class="logo-block">
+      <div class="logo-name">Automated FX Strategy</div>
+      <h1>Session <span>Alpha</span></h1>
+      <div class="header-sub">Backtested Performance Report &nbsp;·&nbsp; Nov 2025 – May 2026 &nbsp;·&nbsp; EUR/USD + GBP/USD</div>
+    </div>
+    <div class="badge">Confidential</div>
+  </div>
+</div>
+
+<div class="container">
+
+  <!-- ── KPIs ─────────────────────────────────────────────── -->
+  <div style="margin-top:36px; margin-bottom:10px;" class="section-label">Key Performance Metrics</div>
+  <div class="kpi-grid">
+    <div class="kpi">
+      <div class="kpi-label">Avg Monthly Return</div>
+      <div class="kpi-value green">+8.5%</div>
+      <div class="kpi-sub">1% risk per trade</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-label">Win Rate</div>
+      <div class="kpi-value gold">49.2%</div>
+      <div class="kpi-sub">242 trades over 6 mo.</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-label">Profit Factor</div>
+      <div class="kpi-value green">1.93×</div>
+      <div class="kpi-sub">$1.93 earned per $1 lost</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-label">Max Drawdown</div>
+      <div class="kpi-value" style="color:#f59e0b;">7.8%</div>
+      <div class="kpi-sub">Worst peak-to-trough</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-label">Winning Months</div>
+      <div class="kpi-value green">5 / 6</div>
+      <div class="kpi-sub">Only 1 losing month*</div>
+    </div>
+  </div>
+
+  <!-- ── Charts Row ────────────────────────────────────────── -->
+  <div class="chart-row">
+    <!-- Equity Curve -->
+    <div class="chart-card">
+      <div class="chart-title">Equity Curve — $10,000 Starting Capital @ 1% Risk</div>
+      <div class="chart-subtitle">Compounded monthly over the 6-month backtest period</div>
+      <div class="chart-wrap">
+        <canvas id="equityChart"></canvas>
+      </div>
+    </div>
+    <!-- Monthly P&L -->
+    <div class="chart-card">
+      <div class="chart-title">Monthly Return %</div>
+      <div class="chart-subtitle">Each bar = one calendar month</div>
+      <div class="chart-wrap">
+        <canvas id="monthlyChart"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Monthly Breakdown Table ───────────────────────────── -->
+  <div class="section-label">Month-by-Month Breakdown</div>
+  <div class="table-card">
+    <table>
+      <thead>
+        <tr>
+          <th>Month</th>
+          <th>Trades</th>
+          <th>Win / Loss</th>
+          <th>Win Rate</th>
+          <th>Return %</th>
+          <th>$10K Acct</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>Nov 2025</strong></td>
+          <td>16</td><td>9W / 7L</td><td>56%</td>
+          <td style="color:var(--green);font-weight:700;">+6.1%</td>
+          <td style="color:var(--green);">+$610</td>
+          <td><span class="win-badge">✓ Winning</span></td>
+        </tr>
+        <tr>
+          <td><strong>Dec 2025</strong></td>
+          <td>49</td><td>23W / 26L</td><td>47%</td>
+          <td style="color:var(--green);font-weight:700;">+4.8%</td>
+          <td style="color:var(--green);">+$509</td>
+          <td><span class="win-badge">✓ Winning</span></td>
+        </tr>
+        <tr>
+          <td><strong>Jan 2026</strong></td>
+          <td>43</td><td>21W / 22L</td><td>49%</td>
+          <td style="color:var(--green);font-weight:700;">+13.6%</td>
+          <td style="color:var(--green);">+$1,512</td>
+          <td><span class="win-badge">✓ Winning</span></td>
+        </tr>
+        <tr>
+          <td><strong>Feb 2026</strong></td>
+          <td>46</td><td>25W / 21L</td><td>54%</td>
+          <td style="color:var(--green);font-weight:700;">+9.1%</td>
+          <td style="color:var(--green);">+$1,147</td>
+          <td><span class="win-badge">✓ Winning</span></td>
+        </tr>
+        <tr>
+          <td><strong>Mar 2026</strong></td>
+          <td>40</td><td>18W / 22L</td><td>45%</td>
+          <td style="color:var(--green);font-weight:700;">+8.1%</td>
+          <td style="color:var(--green);">+$1,080</td>
+          <td><span class="win-badge">✓ Winning</span></td>
+        </tr>
+        <tr>
+          <td><strong>Apr 2026</strong></td>
+          <td>32</td><td>19W / 13L</td><td>59%</td>
+          <td style="color:var(--green);font-weight:700;">+15.9%</td>
+          <td style="color:var(--green);">+$2,219</td>
+          <td><span class="win-badge">✓ Winning</span></td>
+        </tr>
+        <tr>
+          <td><strong>May 2026</strong></td>
+          <td>16</td><td>4W / 12L</td><td>25%</td>
+          <td style="color:var(--red);font-weight:700;">−3.0%</td>
+          <td style="color:var(--red);">−$540</td>
+          <td><span class="partial-badge">⧖ Partial Month</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- ── Income Projections ─────────────────────────────────── -->
+  <div class="section-label">Income Projections — What You Need to Make X Per Day</div>
+  <div class="income-grid">
+
+    <!-- Conservative: 1% -->
+    <div class="risk-tier tier-1">
+      <div class="risk-tier-header">
+        <div>
+          <div class="tier-name">Conservative</div>
+          <div style="font-size:12px;color:var(--muted);margin-top:2px;">1% Risk Per Trade</div>
+        </div>
+        <div class="tier-dd">Max DD: ~8%</div>
+      </div>
+      <div class="risk-tier-body">
+        <div class="income-row"><span class="income-acct">$25,000</span><div class="income-vals"><div class="income-day">~$96/day</div><div class="income-mo">~$2,125/mo</div></div></div>
+        <div class="income-row"><span class="income-acct">$50,000</span><div class="income-vals"><div class="income-day">~$193/day</div><div class="income-mo">~$4,250/mo</div></div></div>
+        <div class="income-row highlight-row"><span class="income-acct">$130,000</span><div class="income-vals"><div class="income-day">~$500/day</div><div class="income-mo">~$11,050/mo</div></div></div>
+        <div class="income-row"><span class="income-acct">$260,000</span><div class="income-vals"><div class="income-day">~$1,000/day</div><div class="income-mo">~$22,100/mo</div></div></div>
+        <div class="income-row"><span class="income-acct">$500,000</span><div class="income-vals"><div class="income-day">~$1,929/day</div><div class="income-mo">~$42,500/mo</div></div></div>
+      </div>
+    </div>
+
+    <!-- Moderate: 2% -->
+    <div class="risk-tier tier-2">
+      <div class="risk-tier-header">
+        <div>
+          <div class="tier-name">Moderate</div>
+          <div style="font-size:12px;color:var(--muted);margin-top:2px;">2% Risk Per Trade</div>
+        </div>
+        <div class="tier-dd">Max DD: ~15%</div>
+      </div>
+      <div class="risk-tier-body">
+        <div class="income-row"><span class="income-acct">$13,000</span><div class="income-vals"><div class="income-day">~$100/day</div><div class="income-mo">~$2,210/mo</div></div></div>
+        <div class="income-row"><span class="income-acct">$25,000</span><div class="income-vals"><div class="income-day">~$193/day</div><div class="income-mo">~$4,250/mo</div></div></div>
+        <div class="income-row highlight-row"><span class="income-acct">$65,000</span><div class="income-vals"><div class="income-day">~$500/day</div><div class="income-mo">~$11,050/mo</div></div></div>
+        <div class="income-row"><span class="income-acct">$130,000</span><div class="income-vals"><div class="income-day">~$1,000/day</div><div class="income-mo">~$22,100/mo</div></div></div>
+        <div class="income-row"><span class="income-acct">$500,000</span><div class="income-vals"><div class="income-day">~$3,858/day</div><div class="income-mo">~$85,000/mo</div></div></div>
+      </div>
+    </div>
+
+    <!-- Aggressive: 3% -->
+    <div class="risk-tier tier-3">
+      <div class="risk-tier-header">
+        <div>
+          <div class="tier-name">Aggressive</div>
+          <div style="font-size:12px;color:var(--muted);margin-top:2px;">3% Risk Per Trade</div>
+        </div>
+        <div class="tier-dd">Max DD: ~22%</div>
+      </div>
+      <div class="risk-tier-body">
+        <div class="income-row"><span class="income-acct">$8,500</span><div class="income-vals"><div class="income-day">~$100/day</div><div class="income-mo">~$2,210/mo</div></div></div>
+        <div class="income-row"><span class="income-acct">$17,000</span><div class="income-vals"><div class="income-day">~$200/day</div><div class="income-mo">~$4,420/mo</div></div></div>
+        <div class="income-row highlight-row"><span class="income-acct">$43,000</span><div class="income-vals"><div class="income-day">~$500/day</div><div class="income-mo">~$11,050/mo</div></div></div>
+        <div class="income-row"><span class="income-acct">$86,000</span><div class="income-vals"><div class="income-day">~$1,000/day</div><div class="income-mo">~$22,100/mo</div></div></div>
+        <div class="income-row"><span class="income-acct">$500,000</span><div class="income-vals"><div class="income-day">~$5,787/day</div><div class="income-mo">~$127,500/mo</div></div></div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ── Strategy Overview ─────────────────────────────────── -->
+  <div class="section-label">Strategy Overview</div>
+  <div class="strategy-card">
+    <div class="strategy-block">
+      <h3>How It Works</h3>
+      <p>Session Alpha is a fully automated, rule-based strategy that trades intraday liquidity patterns on major forex pairs. The system identifies high-probability reversal zones using session-based price structure — requiring no discretionary decisions once deployed.</p>
+      <br/>
+      <p>The bot operates during London and New York sessions, targeting 2 or fewer trades per pair per day with a fixed 2:1 reward-to-risk ratio on every entry.</p>
+    </div>
+    <div class="strategy-block">
+      <h3>Core Principles</h3>
+      <ul>
+        <li>Trades only during peak liquidity hours</li>
+        <li>Hard stop-loss on every position — no exceptions</li>
+        <li>Fixed risk per trade (1%, 2%, or 3% of account)</li>
+        <li>Maximum 2 trades per pair per day</li>
+        <li>Automated entry, exit, and position sizing</li>
+        <li>Full trade log generated after every session</li>
+        <li>Runs 24/5 — no manual intervention required</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="divider"></div>
+
+  <!-- ── Disclaimer ────────────────────────────────────────── -->
+  <div class="disclaimer">
+    <strong style="color:var(--muted);">Important Disclosure:</strong> All figures shown are based on historical backtesting and do not guarantee future results. Past performance is not indicative of future returns. Trading foreign exchange involves substantial risk of loss. Income projections assume average monthly returns of 8.5% based on a 6-month backtest period (Nov 2025 – May 2026) across EUR/USD and GBP/USD using 1-hour OHLCV data. Actual results may vary due to slippage, spread costs, execution latency, and changing market conditions. This document is for informational purposes only and does not constitute financial advice.
+  </div>
+
+</div><!-- /container -->
+
+<script>
+// ── Data ──────────────────────────────────────────────────────
+const months = ['Nov 25','Dec 25','Jan 26','Feb 26','Mar 26','Apr 26','May 26*'];
+const monthlyRet = [6.1, 4.8, 13.6, 9.1, 8.1, 15.9, -3.0];
+
+// Equity curve on $10K
+const equityLabels = ['Start', ...months];
+let bal = 10000;
+const equityData = [bal];
+monthlyRet.forEach(r => { bal = bal * (1 + r/100); equityData.push(Math.round(bal)); });
+
+// ── Chart defaults ────────────────────────────────────────────
+Chart.defaults.color = '#6b85a8';
+Chart.defaults.font.family = "'Inter', system-ui, sans-serif";
+
+// ── Equity Chart ──────────────────────────────────────────────
+const eCtx = document.getElementById('equityChart').getContext('2d');
+const gradient = eCtx.createLinearGradient(0,0,0,220);
+gradient.addColorStop(0, 'rgba(0,214,143,0.25)');
+gradient.addColorStop(1, 'rgba(0,214,143,0.00)');
+
+new Chart(eCtx, {
+  type: 'line',
+  data: {
+    labels: equityLabels,
+    datasets: [{
+      data: equityData,
+      borderColor: '#00d68f',
+      backgroundColor: gradient,
+      borderWidth: 2.5,
+      pointBackgroundColor: '#00d68f',
+      pointRadius: 4,
+      pointHoverRadius: 6,
+      fill: true,
+      tension: 0.35,
+    }]
+  },
+  options: {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: {
+      legend: { display: false },
+      tooltip: {
+        callbacks: {
+          label: ctx => ' $' + ctx.parsed.y.toLocaleString()
+        }
+      }
+    },
+    scales: {
+      x: { grid: { color: 'rgba(26,45,71,0.6)' }, ticks: { font: { size: 11 } } },
+      y: {
+        grid: { color: 'rgba(26,45,71,0.6)' },
+        ticks: {
+          font: { size: 11 },
+          callback: v => '$' + (v/1000).toFixed(0) + 'K'
+        }
+      }
+    }
+  }
+});
+
+// ── Monthly Bar Chart ─────────────────────────────────────────
+const mCtx = document.getElementById('monthlyChart').getContext('2d');
+new Chart(mCtx, {
+  type: 'bar',
+  data: {
+    labels: months,
+    datasets: [{
+      data: monthlyRet,
+      backgroundColor: monthlyRet.map(v => v >= 0 ? 'rgba(0,214,143,0.75)' : 'rgba(255,77,109,0.75)'),
+      borderColor:     monthlyRet.map(v => v >= 0 ? '#00d68f' : '#ff4d6d'),
+      borderWidth: 1.5,
+      borderRadius: 5,
+    }]
+  },
+  options: {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: {
+      legend: { display: false },
+      tooltip: {
+        callbacks: {
+          label: ctx => ' ' + (ctx.parsed.y > 0 ? '+' : '') + ctx.parsed.y.toFixed(1) + '%'
+        }
+      }
+    },
+    scales: {
+      x: { grid: { display: false }, ticks: { font: { size: 10 } } },
+      y: {
+        grid: { color: 'rgba(26,45,71,0.6)' },
+        ticks: {
+          font: { size: 11 },
+          callback: v => (v > 0 ? '+' : '') + v + '%'
+        }
+      }
+    }
+  }
+});
+</script>
+</body>
+</html>

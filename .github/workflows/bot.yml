@@ -1,0 +1,96 @@
+name: Run Kalshi BTC Bot
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'paper or live'
+        required: false
+        default: 'paper'
+        type: choice
+        options: [paper, live]
+  schedule:
+    # Restart automatically every 6 hours so the bot never stops overnight.
+    - cron: '0 */6 * * *'
+
+# Only one bot run at a time per fork. Wait for the running one to exit
+# cleanly (it self-terminates at 5h50m) before starting the next.
+# cancel-in-progress: false prevents a cron tick from killing a bot
+# mid-trade.
+concurrency:
+  group: kalshi-bot
+  cancel-in-progress: false
+
+# REQUIRED so the workflow can git-push state updates with GITHUB_TOKEN.
+permissions:
+  contents: write
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Persist creds so the bot can `git push` state updates back during the run.
+          persist-credentials: true
+          fetch-depth: 1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+
+      - name: Install npm deps (if package.json present)
+        run: |
+          if [ -f package.json ]; then npm ci --no-audit --no-fund; fi
+
+      - name: Validate required secrets
+        env:
+          KEY_ID: ${{ secrets.KALSHI_API_KEY }}
+          PEM:    ${{ secrets.KALSHI_PRIVATE_KEY }}
+        run: |
+          if [ -z "$KEY_ID" ]; then
+            echo "::error::KALSHI_API_KEY secret is missing. Set it in your fork's Settings → Secrets → Actions, or click Start in the dashboard which pushes it for you."
+            exit 1
+          fi
+          if [ -z "$PEM" ]; then
+            echo "::error::KALSHI_PRIVATE_KEY secret is missing. Same fix as above."
+            exit 1
+          fi
+
+      - name: Write Kalshi RSA private key to disk
+        env:
+          # Pass the secret in an env var instead of interpolating directly
+          # into the shell. Even though `secrets.*` substitution is masked,
+          # this prevents any quoting/escaping surprises in the PEM.
+          PEM_DATA: ${{ secrets.KALSHI_PRIVATE_KEY }}
+        run: |
+          umask 077
+          printf '%s' "$PEM_DATA" > kalshi_private_key.pem
+          # Sanity check: BEGIN line should be present
+          head -1 kalshi_private_key.pem | grep -q "BEGIN " || { echo "::error::PEM does not start with BEGIN — paste the FULL key including header & footer"; exit 1; }
+
+      - name: Run bot
+        env:
+          KALSHI_API_KEY:   ${{ secrets.KALSHI_API_KEY }}
+          MODE:             ${{ github.event.inputs.mode || 'paper' }}
+          MAX_DAILY_LOSS:   ${{ vars.MAX_DAILY_LOSS || '25' }}
+          # Optional analytics sink — leave blank to skip.
+          SUPABASE_URL:     ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY:     ${{ secrets.SUPABASE_KEY }}
+        run: |
+          # Run for up to 5h50m so the next cron restart picks up where this leaves off.
+          set +e
+          timeout 21000 node kalshi_btc_paper_bot.js
+          rc=$?
+          if [ $rc -ne 0 ] && [ $rc -ne 124 ]; then
+            echo "::warning::bot exited with code $rc"
+          fi
+          exit 0
+
+      - name: Always remove the PEM
+        if: always()
+        run: rm -f kalshi_private_key.pem
