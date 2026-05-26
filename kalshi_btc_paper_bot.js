@@ -57,19 +57,24 @@ const CONTRARIAN_BET     = 1.00;        // Mode 3: $1 flat, paper only
 const CONTRARIAN_THRESH  = 0.90;        // Mode 3: 90%+ one side triggers check
 
 // ── Mode 4: 7-TF Confluence Late-Window Strategy ──────────────────
-// Entry window : 7–12 min into contract (8–3 min remaining)
-// Mid filter   : YES or NO mid must be 0.90–0.96
-// Confluence   : 4+ of 7 timeframes (1m,3m,5m,15m,30m,1h,4h) agree on direction
+// Entry window : 9–15 min into contract (0–6 min remaining) — the "last
+//                6 minutes" sweet spot. Wider than before; previous 7-12
+//                window almost never triggered.
+// Mid filter   : YES or NO mid must be 0.70–0.96. Hard ceiling at 96¢
+//                (no profit margin above that); floor at 70¢ so we still
+//                need some directional signal in the market.
+// Confluence   : 3+ of 7 timeframes (1m,3m,5m,15m,30m,1h,4h) agree on
+//                direction. Was 4; relaxed to fire more often.
 // Direction    : UP trend → bet YES  |  DOWN trend → bet NO
 // Bet          : $5 flat per entry, one entry per contract
 const MODE4_BET         = 5.00;
-const MODE4_MID_LO      = 0.90;
+const MODE4_MID_LO      = 0.70;
 const MODE4_MID_HI      = 0.96;
-const MODE4_MIN_IN      = 7;           // min minutes into contract to consider
-const MODE4_MAX_IN      = 12;          // max minutes into contract
-const MODE4_MIN_LEFT    = 3;           // min minutes remaining
-const MODE4_MAX_LEFT    = 8;           // max minutes remaining
-const MODE4_CONFLUENCE  = 4;           // TFs that must agree (out of 7)
+const MODE4_MIN_IN      = 9;           // min minutes into contract to consider
+const MODE4_MAX_IN      = 14.5;        // up to 30s before close
+const MODE4_MIN_LEFT    = 0.5;         // allow entry up to last 30 seconds
+const MODE4_MAX_LEFT    = 6;           // earliest entry when 6 min remain
+const MODE4_CONFLUENCE  = 3;           // TFs that must agree (out of 7)
 
 // ── Kill switch — daily loss cap (LIVE only) ──────────────────────
 // Bot exits if its cumulative live PnL today is below -MAX_DAILY_LOSS.
@@ -911,7 +916,7 @@ async function scan() {
 
 
   // -- MODE 4: 7-TF Confluence Late-Window Strategy --------------
-  // Entry window: 7-12 min in / 3-8 min left | mid: 0.90-0.96 | 4/7 TFs | $5 flat
+  // Entry window: 9-14.5 min in / 0.5-6 min left | mid: 0.70-0.96 | 3/7 TFs | $5 flat
   {
     const paused4 = state.mode4.pauseUntil && Date.now() < state.mode4.pauseUntil;
     if (paused4) {
@@ -998,10 +1003,3 @@ if (LIVE_MODE) {
   console.log('\nKalshi BTC 15-min Multi-Mode Bot  [PAPER MODE]');
   console.log('  No real orders will be placed. Pass --live to enable live trading.');
 }
-console.log(`  Bet: step table ($10-$777)  |  Pause after ${PAUSE_LOSSES} losses for 3h (half-step)`);
-console.log(`  Logging: Supabase → positions, contract_captures, bot_state`);
-console.log(`  State:   dashboard/btc_paper_state.json  (local cache, not pushed)`);
-console.log(`  Scan every ${INTERVAL/1000}s  |  Ctrl+C to stop\n`);
-
-scan();
-setInterval(scan, INTERVAL);
