@@ -587,8 +587,8 @@ async function enterPosition(modeState, modeKey, entry) {
   if (entry.cost <= 0) return false;
   if (modeKey !== 'mode3' && modeState.bankroll < entry.cost) return false;
 
-  // Mode 3 + Mode 2 are always paper-only — only Mode 1 and Mode 4 go live
-  const isLive = LIVE_MODE && modeKey !== 'mode3' && modeKey !== 'mode2';
+  // Only Mode 4 trades live — all other modes are paper-only
+  const isLive = LIVE_MODE && modeKey === 'mode4';
 
   if (isLive) {
     // Convert to Kalshi order format:
