@@ -1003,3 +1003,24 @@ if (LIVE_MODE) {
   console.log('\nKalshi BTC 15-min Multi-Mode Bot  [PAPER MODE]');
   console.log('  No real orders will be placed. Pass --live to enable live trading.');
 }
+console.log(`  Bet: $${MODE1_BET} flat (M1/M2)  $${MODE4_BET} flat (M4)  |  Pause after ${PAUSE_LOSSES} losses for 3h`);
+console.log(`  Scan every ${INTERVAL/1000}s  |  Ctrl+C to stop\n`);
+
+// -- Resilient scan loop ------------------------------------------------------
+// Wrap each tick in try/catch so a single bad scan (network blip, API change,
+// JSON parse error) doesn't kill the entire 6-hour run.
+async function safeScan() {
+  try {
+    await scan();
+  } catch (e) {
+    console.log(`\n  !! scan() threw: ${e.message || e}`);
+    console.log('  !! Will retry next tick — bot stays alive');
+  }
+}
+
+process.on('unhandledRejection', (err) => {
+  console.log(`  !! unhandledRejection: ${err && err.message ? err.message : err}`);
+});
+
+safeScan();
+setInterval(safeScan, INTERVAL);

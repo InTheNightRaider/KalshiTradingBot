@@ -1,0 +1,32 @@
+name: Keep workflows alive
+
+on:
+  schedule:
+    # Once every 50 days — well within GitHub's 60-day inactivity window.
+    - cron: '0 12 1,21 * *'
+
+permissions:
+  actions: write
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Re-enable scheduled workflows
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const workflows = await github.rest.actions.listRepoWorkflows({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+            });
+            for (const wf of workflows.data.workflows) {
+              if (wf.state === 'disabled_inactivity') {
+                console.log(`Re-enabling: ${wf.name} (${wf.id})`);
+                await github.rest.actions.enableWorkflow({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  workflow_id: wf.id,
+                });
+              }
+            }

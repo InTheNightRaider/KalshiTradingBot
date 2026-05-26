@@ -84,7 +84,22 @@ jobs:
         run: |
           # Run for up to 5h50m so the next cron restart picks up where this leaves off.
           set +e
-          timeout 21000 node kalshi_btc_paper_bot.js
+          timeout 21000 node kalshi_btc_paper_bot.js &
+          BOT_PID=$!
+
+          # Smoke check: if the bot exits within 15s it probably crashed on
+          # startup (missing scan loop, bad PEM, syntax error). Fail loudly
+          # so the Actions run shows red instead of a silent green exit.
+          sleep 15
+          if ! kill -0 $BOT_PID 2>/dev/null; then
+            wait $BOT_PID
+            rc=$?
+            echo "::error::Bot exited within 15s (code $rc). Check for missing scan loop or startup crash."
+            exit 1
+          fi
+
+          # Bot is alive — wait for it to finish its full run.
+          wait $BOT_PID
           rc=$?
           if [ $rc -ne 0 ] && [ $rc -ne 124 ]; then
             echo "::warning::bot exited with code $rc"
