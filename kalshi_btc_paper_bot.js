@@ -717,18 +717,20 @@ async function scan() {
   // ── Kalshi markets ────────────────────────────────────────────
   let allMkts = [];
   try {
-    const eventsRaw = await kalshiGet('/events?series_ticker=KXBTCD&status=open&limit=10');
-    const events    = eventsRaw.events || [];
-    const mktArrays = await Promise.all(
-      events.map(ev => kalshiGet(`/markets?event_ticker=${ev.event_ticker}&limit=200`).catch(() => ({})))
-    );
-    allMkts = mktArrays.flatMap(r => r.markets || []).map(m => ({
+    const mktResult = await kalshiGet(`/markets?status=open&limit=500`);
+    const allMarkets = mktResult.markets || [];
+    const btcMarkets = allMarkets.filter(m => m.ticker && m.ticker.startsWith('KXBTC'));
+    console.log(`  📡 Found ${btcMarkets.length} BTC market(s)`);
+
+    allMkts = btcMarkets.map(m => ({
       ...m,
       yes_bid: m.yes_bid_dollars ?? m.yes_bid ?? 0,
       yes_ask: m.yes_ask_dollars ?? m.yes_ask ?? 0,
       no_bid:  m.no_bid_dollars  ?? m.no_bid  ?? 0,
       no_ask:  m.no_ask_dollars  ?? m.no_ask  ?? 0,
     }));
+
+    if (allMkts.length === 0) console.log('  !! No BTC markets found');
   } catch (e) {
     console.log(`  !! Kalshi fetch failed: ${e.message}`);
   }
