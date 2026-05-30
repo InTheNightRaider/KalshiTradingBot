@@ -180,6 +180,42 @@ async function fetchKalshiBalance() {
   } catch { return null; }
 }
 
+// ── Kalshi-settled trade records — source of truth for actual cost+pnl.
+// /portfolio/settlements returns every closed position with real cost,
+// revenue, and side counts. Use this instead of inferring outcomes from
+// market.result + intended cost, which drifts (limit-vs-fill price,
+// partial fills, etc.).
+async function fetchKalshiSettlements(limit = 100) {
+  try {
+    const r = await kalshiGet(`/portfolio/settlements?limit=${limit}`);
+    return Array.isArray(r?.settlements) ? r.settlements : [];
+  } catch { return []; }
+}
+
+// Extract outcome for our specific side from a settlement record.
+// Settlement shape: { ticker, market_result, yes_count, no_count,
+//                     yes_total_cost (cents), no_total_cost (cents),
+//                     revenue (cents), settled_time }
+// Returns { won, actualCost, revenue, pnl, count } or null if our side
+// has no contracts in this settlement.
+function settlementOutcome(settlement, side) {
+  const isYes  = side.toUpperCase() === 'YES';
+  const count  = isYes ? (settlement.yes_count || 0) : (settlement.no_count || 0);
+  if (count === 0) return null;
+  const cents  = isYes ? (settlement.yes_total_cost || 0) : (settlement.no_total_cost || 0);
+  const rev    = settlement.revenue || 0;
+  // Kalshi's market_result is 'yes' / 'no' (or rarely 'void').
+  const result = (settlement.market_result || '').toLowerCase();
+  const won    = result === side.toLowerCase();
+  return {
+    won,
+    actualCost: cents / 100,
+    revenue:    rev   / 100,
+    pnl:        (rev - cents) / 100,
+    count,
+  };
+}
+
 // ── RSI (Wilder's smoothed) ───────────────────────────────────────
 function rsi(closes, period = 14) {
   if (closes.length < period + 1) return null;
@@ -368,33 +404,63 @@ function saveState(state, pushLabel) {
 }
 
 // ── Resolve expired positions ─────────────────────────────────────
+// Source of truth (in order):
+//   1) Kalshi /portfolio/settlements — actual cost, revenue, pnl as
+//      booked on the account. Matches your Kalshi UI exactly.
+//   2) Market result + intended cost — fallback when settlement isn't
+//      published yet (some markets take a minute or two to settle).
 async function resolveExpired(modeState, modeKey, markets) {
   const now = Date.now();
   const pending = [];
+
+  // Pull the latest settlements once per scan (cheap; one API call).
+  const haveExpired = modeState.open.some(p => now >= new Date(p.close_time).getTime() + 90_000);
+  const settlements = haveExpired ? await fetchKalshiSettlements(100) : [];
 
   for (const pos of modeState.open) {
     const closeMs = new Date(pos.close_time).getTime();
     if (now < closeMs + 90_000) { pending.push(pos); continue; }
 
-    let won = null;
-    const mkt = markets.find(m => m.ticker === pos.ticker);
-    if (mkt?.result) {
-      won = mkt.result.toUpperCase() === pos.side.toUpperCase();
+    let won, actualCost, pnl, source;
+
+    // ── Path 1: Kalshi settlement record (preferred) ──
+    const settlement = settlements.find(s => s.ticker === pos.ticker);
+    const outcome    = settlement ? settlementOutcome(settlement, pos.side) : null;
+    if (outcome) {
+      won        = outcome.won;
+      actualCost = outcome.actualCost;
+      pnl        = parseFloat(outcome.pnl.toFixed(2));
+      source     = 'settlement';
     } else {
-      const resp = await kalshiGet('/markets/' + pos.ticker).catch(() => null);
-      const m    = resp?.market;
-      if (m?.result) won = m.result.toUpperCase() === pos.side.toUpperCase();
-      else { pending.push(pos); continue; }
+      // ── Path 2: market.result + intended cost (fallback) ──
+      const mkt = markets.find(m => m.ticker === pos.ticker);
+      let result = mkt?.result;
+      if (!result) {
+        const resp = await kalshiGet('/markets/' + pos.ticker).catch(() => null);
+        result = resp?.market?.result;
+      }
+      if (!result) { pending.push(pos); continue; }
+      won        = result.toLowerCase() === pos.side.toLowerCase();
+      actualCost = pos.cost;
+      pnl        = won
+        ? parseFloat((pos.cost / pos.contractPx - pos.cost).toFixed(2))
+        : -pos.cost;
+      source     = 'fallback';
     }
 
-    const pnl = won
-      ? parseFloat((pos.cost / pos.contractPx - pos.cost).toFixed(2))
-      : -pos.cost;
-
+    // Local bankroll is overwritten by the next-scan Kalshi sync in LIVE
+    // mode, so this mutation only matters for PAPER. Keep it for parity.
     modeState.bankroll = parseFloat(Math.max(0, modeState.bankroll + pnl).toFixed(4));
 
     updateStreak(modeState, won, modeKey);
-    modeState.trades.push({ ...pos, resolved: true, won, pnl, resolved_at: new Date().toISOString() });
+    modeState.trades.push({
+      ...pos,
+      cost:           actualCost,         // overwrite intended with actual
+      intendedCost:   pos.cost,           // keep original for diff visibility
+      resolutionSource: source,
+      resolved: true, won, pnl,
+      resolved_at: new Date().toISOString(),
+    });
 
     sb.resolvePosition(pos.sb_id, won, pnl, pos.priceTicks)
       .catch(e => console.log('  !! sb.resolvePosition: ' + e.message));
@@ -403,8 +469,11 @@ async function resolveExpired(modeState, modeKey, markets) {
         .catch(e => console.log('  !! sb.insertBotState: ' + e.message));
     }
 
-    const icon = won ? '✅' : '❌';
-    console.log(`  ${icon} [${modeKey.toUpperCase()}] ${pos.ticker} ${pos.side} @ ${(pos.contractPx*100).toFixed(0)}¢ → ${won?'WIN':'LOSS'} ${fmt$(pnl)}  streak: ${modeState.lossStreak}L`);
+    const icon  = won ? '✅' : '❌';
+    const note  = source === 'settlement'
+      ? `actual cost $${actualCost.toFixed(2)} (intended $${pos.cost.toFixed(2)})`
+      : 'fallback resolution';
+    console.log(`  ${icon} [${modeKey.toUpperCase()}] ${pos.ticker} ${pos.side} → ${won?'WIN':'LOSS'} ${fmt$(pnl)}  ${note}  streak: ${modeState.lossStreak}L`);
 
     if (_scanState) saveState(_scanState, 'resolution');
   }
