@@ -85,6 +85,14 @@ const SL_MIN_LEFT   = 3;
 const SL_THRESHOLD  = 0.40;
 const SL_FLOOR_BID  = 0.05;
 
+// ── Hard Take Profit ──────────────────────────────────────────────
+// Exit any open position the moment our side's mid is up TP_AMOUNT
+// from entry. Sells at current bid (so actual profit ≈ TP - spread/2,
+// roughly 12-14¢/contract after a 2-3¢ spread).
+// Backtest on 27 live trades: +$27.53 over actual at 15¢ TP (22/27
+// trades fire). The biggest single edge we have in the data.
+const TP_AMOUNT = 0.15;
+
 // ── 5m RSI slope filter (Version A) ───────────────────────────────
 // At entry, look at the 5m RSI movement over the last 3 min. If it's
 // moving against our trade direction (rising for NO, falling for YES),
@@ -891,6 +899,16 @@ async function scan() {
       });
       tickCount++;
 
+      // ── Hard Take Profit: lock in TP_AMOUNT gain the moment we hit it.
+      // Sells at current bid; actual ≈ TP - half-spread. Backtest shows
+      // this fires on ~80% of trades and is the biggest single edge.
+      const gain = nowPx - pos.contractPx;
+      if (minutesLeft > 0.5 && gain >= TP_AMOUNT) {
+        const reason = `TP +${(gain*100).toFixed(0)}¢ (entry ${(pos.contractPx*100).toFixed(0)}¢ → mid ${(nowPx*100).toFixed(0)}¢)`;
+        const ok = await exitPosition(state.mode4a, 'mode4a', pos, nowPx, nowBid, reason);
+        if (ok) { exitedTickers.push(pos.ticker); continue; }
+      }
+
       // ── Salvage SL: in last 3 min, if losing badly with a real bid,
       // sell to recoup some money instead of waiting for the $0 settle.
       if (minutesLeft > 0.5 && minutesLeft <= SL_MIN_LEFT && nowPx < SL_THRESHOLD && nowBid >= SL_FLOOR_BID) {
@@ -1018,7 +1036,8 @@ if (LIVE_MODE) {
   console.log('  No real orders. Remove --paper (and MODE=paper) to go live.');
 }
 console.log(`  Bet tier: $5/$8/$11/$14/$17/$20 @ <$200/<$350/<$500/<$650/<$800/$800+  |  Recovery: ${RECOVERY_MULTI}x for ${MAX_RECOVERY_ATTEMPTS} attempts then reset`);
-console.log(`  Mid: ${MODE4A_MID_LO*100}-${MODE4A_MID_HI*100}¢  Confluence: ${MODE4A_CONFLUENCE}/7  |  Cooldown: 30min  |  5m RSI slope filter ON  |  Salvage SL <${SL_THRESHOLD*100}¢ w/ ≤${SL_MIN_LEFT}m left`);
+console.log(`  Mid: ${MODE4A_MID_LO*100}-${MODE4A_MID_HI*100}¢  Confluence: ${MODE4A_CONFLUENCE}/7  |  Cooldown: 30min  |  5m RSI slope filter ON`);
+console.log(`  Hard TP: +${TP_AMOUNT*100}¢ from entry  |  Salvage SL: <${SL_THRESHOLD*100}¢ w/ ≤${SL_MIN_LEFT}m left`);
 console.log(`  Daily loss cap: $${MAX_DAILY_LOSS}  |  Scan every ${INTERVAL/1000}s\n`);
 
 // ── Resilient scan loop ───────────────────────────────────────────
