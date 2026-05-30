@@ -49,12 +49,62 @@ const MODE4A_CONFLUENCE = 3;  // require 3+ of 7 timeframes to agree
 
 // ── Recovery after loss ───────────────────────────────────────────
 // Time-based cooldown: sit out 30 min after each loss.
-// Signal-counter skips burned through in seconds (10 markets × 2 skips
-// = consumed in one scan cycle), so we switched to wall-clock cooldown.
 const LOSS_COOLDOWN_MS = 30 * 60 * 1000;
-// 2x on first trade after a loss cooldown expires — one shot to recover.
-// After 2+ consecutive losses: flat $5 (no chasing a deep hole).
-const RECOVERY_MULTI = 2;
+// Recovery multiplier: 2x next bet for the first MAX_RECOVERY_ATTEMPTS
+// losses in a streak, then reset to NORMAL (no chasing deeper holes).
+const RECOVERY_MULTI         = 2;
+const MAX_RECOVERY_ATTEMPTS  = 2;
+
+// ── Bet-size tiers by bankroll ────────────────────────────────────
+// Flat $5 until we prove sustained profit; step up gently after.
+function getBaseBet(bankroll) {
+  if (bankroll < 200) return 5;
+  if (bankroll < 350) return 8;
+  if (bankroll < 500) return 11;
+  if (bankroll < 650) return 14;
+  if (bankroll < 800) return 17;
+  return 20;
+}
+
+// State machine: streak 0 → tier, streak 1..MAX → 2x tier, streak >MAX → tier.
+function getCurrentBet(modeState) {
+  const base   = getBaseBet(modeState.bankroll);
+  const streak = modeState.lossStreak || 0;
+  if (streak >= 1 && streak <= MAX_RECOVERY_ATTEMPTS) {
+    return { cost: base * RECOVERY_MULTI, base, multi: RECOVERY_MULTI, recovery: true, attempt: streak };
+  }
+  return { cost: base, base, multi: 1, recovery: false, attempt: 0 };
+}
+
+// ── Salvage stop loss (no take-profit, no trailing stop) ──────────
+// In the last SL_MIN_LEFT min, if our side mid is clearly losing AND
+// there's a non-trivial bid, exit at bid to recoup some money instead
+// of going to $0. Take profit / trailing stop were not shipped: data
+// showed they overlapped with the 5m RSI slope filter and cut winners.
+const SL_MIN_LEFT   = 3;
+const SL_THRESHOLD  = 0.40;
+const SL_FLOOR_BID  = 0.05;
+
+// ── 5m RSI slope filter (Version A) ───────────────────────────────
+// At entry, look at the 5m RSI movement over the last 3 min. If it's
+// moving against our trade direction (rising for NO, falling for YES),
+// skip the entry. Backtest: caught 3 losses, no wins lost, +$6.15 over
+// 13-trade sample. Tolerates small wobble (±SLOPE_TOLERANCE).
+const SLOPE_LOOKBACK_MIN = 3;
+const SLOPE_TOLERANCE    = 1;  // RSI points
+
+function rsi5mSlope(state) {
+  const log = state.confluenceLog || [];
+  if (log.length < 3) return 0;
+  const now = Date.now();
+  const cutoff = now - SLOPE_LOOKBACK_MIN * 60 * 1000;
+  const window = log.filter(e => {
+    const t = new Date(e.ts).getTime();
+    return t >= cutoff && e.r5 != null;
+  });
+  if (window.length < 3) return 0;
+  return window[window.length - 1].r5 - window[0].r5;
+}
 
 // ── Kill switch — daily loss cap (live only) ──────────────────────
 const MAX_DAILY_LOSS = parseFloat(process.env.MAX_DAILY_LOSS || '25');
@@ -237,18 +287,19 @@ function rsi(closes, period = 14) {
 // ── After loss/win ────────────────────────────────────────────────
 function updateStreak(modeState, won, modeKey) {
   if (won) {
-    modeState.lossStreak    = 0;
-    modeState.recoveryMulti = 1;
+    modeState.lossStreak      = 0;
     modeState.cooldownUntilMs = 0;
   } else {
     const streak = (modeState.lossStreak || 0) + 1;
     modeState.lossStreak      = streak;
     modeState.cooldownUntilMs = Date.now() + LOSS_COOLDOWN_MS;
-    // 2x recovery on first trade after cooldown; flat after 2+ losses
-    modeState.recoveryMulti   = streak >= 2 ? 1 : RECOVERY_MULTI;
-    const minsLabel = (LOSS_COOLDOWN_MS / 60000).toFixed(0);
-    const betLabel  = modeState.recoveryMulti > 1 ? `, then $${(MODE4A_BET * modeState.recoveryMulti).toFixed(0)} recovery bet` : ', flat $5 (2+ losses)';
-    console.log(`  [${modeKey.toUpperCase()}] Loss streak ${streak} — cooling down ${minsLabel}min${betLabel}`);
+    const mins = (LOSS_COOLDOWN_MS / 60000).toFixed(0);
+    if (streak > MAX_RECOVERY_ATTEMPTS) {
+      console.log(`  [${modeKey.toUpperCase()}] Loss streak ${streak} — recovery cap hit, cooling down ${mins}min then NORMAL bet`);
+    } else {
+      const nextBet = getBaseBet(modeState.bankroll) * RECOVERY_MULTI;
+      console.log(`  [${modeKey.toUpperCase()}] Loss streak ${streak} — cooling down ${mins}min, next bet ${RECOVERY_MULTI}x = $${nextBet} (recovery ${streak}/${MAX_RECOVERY_ATTEMPTS})`);
+    }
   }
 }
 
@@ -409,6 +460,64 @@ function saveState(state, pushLabel) {
 //      booked on the account. Matches your Kalshi UI exactly.
 //   2) Market result + intended cost — fallback when settlement isn't
 //      published yet (some markets take a minute or two to settle).
+
+// ── Exit an open position early (salvage SL only) ─────────────────
+// Places a SELL limit at the current bid. Limit-sell at bid fills
+// against the resting bid order. Removes position from open[] and
+// records a trade with resolutionSource='manual_exit'.
+async function exitPosition(modeState, modeKey, pos, exitMid, exitBid, reason) {
+  const count = pos.contractCount || Math.max(1, Math.floor(pos.cost / pos.contractPx));
+  const priceInCents = Math.max(1, Math.floor(exitBid * 100));
+
+  if (!LIVE_MODE) {
+    const proceeds = count * exitBid;
+    const pnl = parseFloat((proceeds - pos.cost).toFixed(2));
+    modeState.bankroll = parseFloat((modeState.bankroll + proceeds).toFixed(4));
+    updateStreak(modeState, pnl > 0, modeKey);
+    modeState.trades.push({
+      ...pos, resolved: true, won: pnl > 0, pnl,
+      resolutionSource: 'manual_exit', exitReason: reason,
+      exitMid, exitBid, resolved_at: new Date().toISOString(),
+    });
+    console.log(`  🛟 [EXIT-PAPER] ${pos.ticker} ${pos.side} ${count}x @ ${priceInCents}¢ (${reason})  pnl ${pnl>=0?'+':''}$${pnl.toFixed(2)}`);
+    return true;
+  }
+
+  const side = pos.side.toLowerCase();
+  const orderBody = {
+    ticker: pos.ticker,
+    client_order_id: crypto.randomUUID(),
+    side, count,
+    action: 'sell',
+    type:   'limit',
+    [`${side}_price`]: priceInCents,
+  };
+
+  try {
+    const resp = await kalshiPost('/portfolio/orders', orderBody);
+    if (resp.status !== 200 && resp.status !== 201) {
+      console.log(`  ⚠️ [EXIT FAILED] ${pos.ticker} HTTP ${resp.status}: ${JSON.stringify(resp.body).slice(0,160)}`);
+      return false;
+    }
+    const proceeds = count * (priceInCents / 100);
+    const pnl      = parseFloat((proceeds - pos.cost).toFixed(2));
+    const won      = pnl > 0;
+    modeState.bankroll = parseFloat((modeState.bankroll + proceeds).toFixed(4));
+    updateStreak(modeState, won, modeKey);
+    modeState.trades.push({
+      ...pos, resolved: true, won, pnl,
+      resolutionSource: 'manual_exit', exitReason: reason,
+      exitMid, exitBid, resolved_at: new Date().toISOString(),
+    });
+    const icon = won ? '💰' : '🛟';
+    console.log(`  ${icon} [EXIT ${reason}] ${pos.ticker} ${pos.side} ${count}x → sold @ ${priceInCents}¢  proceeds $${proceeds.toFixed(2)}  est pnl ${pnl>=0?'+':''}$${pnl.toFixed(2)}`);
+    return true;
+  } catch (e) {
+    console.log(`  ⚠️ [EXIT EXCEPTION] ${pos.ticker}: ${e.message}`);
+    return false;
+  }
+}
+
 async function resolveExpired(modeState, modeKey, markets) {
   const now = Date.now();
   const pending = [];
@@ -708,6 +817,34 @@ async function scan() {
     }),
   };
 
+  // ── Nearby-market log: per-scan snapshot of mid/bid/ask for the 6
+  // closest-to-money contracts. Lets us backtest "would we have taken
+  // a better trade if the filter let us in?" — answers the gap the
+  // priceTicks (entered-only) approach couldn't.
+  // Rolling buffer in state file, capped at 360 entries (~3h at 30s).
+  {
+    if (!Array.isArray(state.nearbyMarketLog)) state.nearbyMarketLog = [];
+    state.nearbyMarketLog.push({
+      ts:  new Date().toISOString(),
+      btc: Math.round(btcPrice),
+      markets: nearby.slice(0, 6).map(m => {
+        const { minutesLeft } = windowTiming(m.close_time);
+        return {
+          ticker: m.ticker,
+          strike: m.floor_strike,
+          yMid:   parseFloat(midPrice(m.yes_bid, m.yes_ask).toFixed(3)),
+          nMid:   parseFloat(midPrice(m.no_bid,  m.no_ask).toFixed(3)),
+          yBid:   parseFloat((m.yes_bid || 0).toFixed(3)),
+          yAsk:   parseFloat((m.yes_ask || 0).toFixed(3)),
+          nBid:   parseFloat((m.no_bid  || 0).toFixed(3)),
+          nAsk:   parseFloat((m.no_ask  || 0).toFixed(3)),
+          mLeft:  parseFloat(minutesLeft.toFixed(2)),
+        };
+      }),
+    });
+    if (state.nearbyMarketLog.length > 360) state.nearbyMarketLog = state.nearbyMarketLog.slice(-360);
+  }
+
   // ── Live mark-to-market + tick log for open Mode 4a positions ──
   // Refreshed every 30s. Stores entry vs. now per side, unrealized P&L,
   // and contract count on each pos so the dashboard can show:
@@ -718,6 +855,7 @@ async function scan() {
   {
     const mktMap = {};
     for (const m of allMkts) mktMap[m.ticker] = m;
+    const exitedTickers = [];
     let tickCount = 0;
     for (const pos of (state.mode4a.open || [])) {
       const m = mktMap[pos.ticker];
@@ -728,6 +866,7 @@ async function scan() {
 
       const isYes  = pos.side.toUpperCase() === 'YES';
       const nowPx  = isYes ? yesMid : noMid;
+      const nowBid = isYes ? m.yes_bid : m.no_bid;
       const count  = Math.max(1, Math.floor(pos.cost / pos.contractPx));
       const curVal = parseFloat((count * nowPx).toFixed(2));
       const unPnl  = parseFloat((curVal - pos.cost).toFixed(2));
@@ -737,9 +876,6 @@ async function scan() {
       pos.currentValue  = curVal;
       pos.unrealizedPnl = unPnl;
       pos.lastQuoteAt   = new Date().toISOString();
-
-      openValueTotal += curVal;
-      openUnrealized += unPnl;
 
       const arrow = unPnl >= 0 ? '↑' : '↓';
       console.log(`  📊 [OPEN] ${pos.ticker.slice(-22)} ${pos.side} ${count}x  entry ${(pos.contractPx*100).toFixed(0)}¢ → now ${(nowPx*100).toFixed(0)}¢  val $${curVal.toFixed(2)}  ${arrow} ${fmt$(unPnl)}  ${minutesLeft.toFixed(1)}m left`);
@@ -754,8 +890,21 @@ async function scan() {
         minutesLeft: parseFloat(minutesLeft.toFixed(2)),
       });
       tickCount++;
+
+      // ── Salvage SL: in last 3 min, if losing badly with a real bid,
+      // sell to recoup some money instead of waiting for the $0 settle.
+      if (minutesLeft > 0.5 && minutesLeft <= SL_MIN_LEFT && nowPx < SL_THRESHOLD && nowBid >= SL_FLOOR_BID) {
+        const reason = `SL ${(nowBid*100).toFixed(0)}¢ @ ${minutesLeft.toFixed(1)}m left`;
+        const ok = await exitPosition(state.mode4a, 'mode4a', pos, nowPx, nowBid, reason);
+        if (ok) { exitedTickers.push(pos.ticker); continue; }
+      }
+      openValueTotal += curVal;
+      openUnrealized += unPnl;
     }
     if (tickCount > 0) console.log(`  📈 Tick logged for ${tickCount} open position(s)`);
+    if (exitedTickers.length) {
+      state.mode4a.open = state.mode4a.open.filter(p => !exitedTickers.includes(p.ticker));
+    }
   }
 
   // Effective bankroll = cash + market value of open positions.
@@ -806,16 +955,28 @@ async function scan() {
           continue;
         }
 
-        const multi = ms.recoveryMulti || 1;
-        const cost  = MODE4A_BET * multi;
+        // 5m RSI slope filter — skip if momentum is against trade direction.
+        // For YES: 5m RSI must not be falling > SLOPE_TOLERANCE.
+        // For NO:  5m RSI must not be rising > SLOPE_TOLERANCE.
+        const slope = rsi5mSlope(state);
+        const slopeOk = sig.side === 'YES'
+          ? slope >= -SLOPE_TOLERANCE
+          : slope <=  SLOPE_TOLERANCE;
+        if (!slopeOk) {
+          console.log(`  [M4a] SKIP ${m.ticker.slice(-20)} -- 5m RSI slope ${slope>=0?'+':''}${slope.toFixed(1)} against ${sig.side}`);
+          continue;
+        }
+
+        const { cost, base, multi, recovery, attempt } = getCurrentBet(ms);
         if (ms.bankroll < cost) {
           console.log(`  [M4a] SKIP -- bankroll $${ms.bankroll.toFixed(2)} < bet $${cost.toFixed(2)}`);
           continue;
         }
 
-        const profit = cost * (1 / sig.contractPx - 1);
-        const multiTag = multi > 1 ? ` [${multi}x RECOVERY]` : '';
-        console.log(`\n  [M4a] ENTER -- ${sig.reason}  win: +$${profit.toFixed(2)}${multiTag}`);
+        const profit   = cost * (1 / sig.contractPx - 1);
+        const recovTag = recovery ? ` [${multi}x RECOVERY ${attempt}/${MAX_RECOVERY_ATTEMPTS}]` : '';
+        const slopeTag = ` 5mΔ ${slope>=0?'+':''}${slope.toFixed(1)}`;
+        console.log(`\n  [M4a] ENTER -- ${sig.reason}${slopeTag}  bet $${cost} (tier $${base} @ $${ms.bankroll.toFixed(0)} bank)${recovTag}  win: +$${profit.toFixed(2)}`);
 
         const entered = await enterPosition(ms, 'mode4a', {
           ticker: m.ticker, side: sig.side, cost, contractPx: sig.contractPx,
@@ -837,12 +998,12 @@ async function scan() {
   // ── Summary ──────────────────────────────────────────────────
   const s = modeStats(state.mode4a);
   const ms = state.mode4a;
-  const multi = ms.recoveryMulti || 1;
-  const curBet = MODE4A_BET * multi;
-  const skipStr = ms.skipSignals > 0 ? `  SKIP ${ms.skipSignals}` : '';
-  const multiStr = multi > 1 ? ` [${multi}x]` : '';
+  const { cost: curBet, recovery, attempt } = getCurrentBet(ms);
+  const cdStr = (ms.cooldownUntilMs && Date.now() < ms.cooldownUntilMs)
+    ? `  CD ${((ms.cooldownUntilMs - Date.now())/60000).toFixed(0)}m` : '';
+  const recovStr = recovery ? `  REC ${attempt}/${MAX_RECOVERY_ATTEMPTS}` : '';
   console.log('\n  -- Stats ----------------------------------------------------------');
-  console.log(`  Mode 4a: ${s.wins}/${s.tot} (${s.wr.toFixed(0)}% WR)  P&L ${fmt$(s.pnl)}  streak: ${ms.lossStreak}L  bank $${ms.bankroll.toFixed(2)}  bet $${curBet.toFixed(2)}${multiStr}  ${LIVE_MODE ? 'LIVE' : 'PAPER'}${skipStr}`);
+  console.log(`  Mode 4a: ${s.wins}/${s.tot} (${s.wr.toFixed(0)}% WR)  P&L ${fmt$(s.pnl)}  streak: ${ms.lossStreak}L  bank $${ms.bankroll.toFixed(2)}  bet $${curBet}  ${LIVE_MODE ? 'LIVE' : 'PAPER'}${cdStr}${recovStr}`);
 
   saveState(state, 'tick');
 }
@@ -856,7 +1017,8 @@ if (LIVE_MODE) {
   console.log('\nKalshi BTC Mode 4a Bot  [PAPER — simulation]');
   console.log('  No real orders. Remove --paper (and MODE=paper) to go live.');
 }
-console.log(`  Bet: $${MODE4A_BET}  Mid: ${MODE4A_MID_LO*100}-${MODE4A_MID_HI*100}¢  Confluence: ${MODE4A_CONFLUENCE}/7  |  Loss cooldown: 30min  |  Recovery: ${RECOVERY_MULTI}x (flat after 2L)`);
+console.log(`  Bet tier: $5/$8/$11/$14/$17/$20 @ <$200/<$350/<$500/<$650/<$800/$800+  |  Recovery: ${RECOVERY_MULTI}x for ${MAX_RECOVERY_ATTEMPTS} attempts then reset`);
+console.log(`  Mid: ${MODE4A_MID_LO*100}-${MODE4A_MID_HI*100}¢  Confluence: ${MODE4A_CONFLUENCE}/7  |  Cooldown: 30min  |  5m RSI slope filter ON  |  Salvage SL <${SL_THRESHOLD*100}¢ w/ ≤${SL_MIN_LEFT}m left`);
 console.log(`  Daily loss cap: $${MAX_DAILY_LOSS}  |  Scan every ${INTERVAL/1000}s\n`);
 
 // ── Resilient scan loop ───────────────────────────────────────────
