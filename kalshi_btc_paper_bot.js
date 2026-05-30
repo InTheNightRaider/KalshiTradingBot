@@ -708,7 +708,13 @@ async function scan() {
     }),
   };
 
-  // ── Intra-trade tick logging for open Mode 4a positions ──────
+  // ── Live mark-to-market + tick log for open Mode 4a positions ──
+  // Refreshed every 30s. Stores entry vs. now per side, unrealized P&L,
+  // and contract count on each pos so the dashboard can show:
+  //   entry $0.62 → now $0.74  count=8  value $5.92  unrealized +$0.92
+  // Not fee/slippage-adjusted but "accurate enough for a 30s refresh."
+  let openValueTotal = 0;
+  let openUnrealized = 0;
   {
     const mktMap = {};
     for (const m of allMkts) mktMap[m.ticker] = m;
@@ -717,18 +723,49 @@ async function scan() {
       const m = mktMap[pos.ticker];
       if (!m) continue;
       const { minutesLeft } = windowTiming(m.close_time);
+      const yesMid = midPrice(m.yes_bid, m.yes_ask);
+      const noMid  = midPrice(m.no_bid,  m.no_ask);
+
+      const isYes  = pos.side.toUpperCase() === 'YES';
+      const nowPx  = isYes ? yesMid : noMid;
+      const count  = Math.max(1, Math.floor(pos.cost / pos.contractPx));
+      const curVal = parseFloat((count * nowPx).toFixed(2));
+      const unPnl  = parseFloat((curVal - pos.cost).toFixed(2));
+
+      pos.currentPx     = parseFloat(nowPx.toFixed(4));
+      pos.contractCount = count;
+      pos.currentValue  = curVal;
+      pos.unrealizedPnl = unPnl;
+      pos.lastQuoteAt   = new Date().toISOString();
+
+      openValueTotal += curVal;
+      openUnrealized += unPnl;
+
+      const arrow = unPnl >= 0 ? '↑' : '↓';
+      console.log(`  📊 [OPEN] ${pos.ticker.slice(-22)} ${pos.side} ${count}x  entry ${(pos.contractPx*100).toFixed(0)}¢ → now ${(nowPx*100).toFixed(0)}¢  val $${curVal.toFixed(2)}  ${arrow} ${fmt$(unPnl)}  ${minutesLeft.toFixed(1)}m left`);
+
       if (!pos.priceTicks) pos.priceTicks = [];
       pos.priceTicks.push({
         ts:          new Date().toISOString(),
         btcPrice:    parseFloat(btcPrice.toFixed(2)),
-        yesMid:      parseFloat(midPrice(m.yes_bid, m.yes_ask).toFixed(4)),
-        noMid:       parseFloat(midPrice(m.no_bid,  m.no_ask).toFixed(4)),
+        yesMid:      parseFloat(yesMid.toFixed(4)),
+        noMid:       parseFloat(noMid.toFixed(4)),
         rsi1m:       rsi1m ? parseFloat(rsi1m.toFixed(1)) : null,
         minutesLeft: parseFloat(minutesLeft.toFixed(2)),
       });
       tickCount++;
     }
     if (tickCount > 0) console.log(`  📈 Tick logged for ${tickCount} open position(s)`);
+  }
+
+  // Effective bankroll = cash + market value of open positions.
+  // Refreshed every scan; used for display/dashboard, not for the
+  // "can I afford this bet" check (that still uses cash only).
+  state.mode4a.openValue        = parseFloat(openValueTotal.toFixed(2));
+  state.mode4a.openUnrealized   = parseFloat(openUnrealized.toFixed(2));
+  state.mode4a.effectiveBankroll= parseFloat((state.mode4a.bankroll + openValueTotal).toFixed(2));
+  if (state.mode4a.open && state.mode4a.open.length > 0) {
+    console.log(`  💼 cash $${state.mode4a.bankroll.toFixed(2)}  +  open $${openValueTotal.toFixed(2)} (${openUnrealized>=0?'+':''}${openUnrealized.toFixed(2)})  =  effective $${state.mode4a.effectiveBankroll.toFixed(2)}`);
   }
 
   // ── Mode 4a: scan every market in the entry window ───────────

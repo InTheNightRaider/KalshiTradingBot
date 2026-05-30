@@ -36,7 +36,11 @@ jobs:
         with:
           # Persist creds so the bot can `git push` state updates back during the run.
           persist-credentials: true
-          fetch-depth: 1
+          # fetch-depth: 0 = full history. With depth=1 (shallow), the bot's
+          # `git push --force-with-lease` collapsed all prior commits into a
+          # single tip, wiping every code change that landed during the run.
+          # Full history makes amend-and-rebase preserve ancestors.
+          fetch-depth: 0
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
